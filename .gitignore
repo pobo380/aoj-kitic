@@ -1,0 +1,13 @@
+# java spesific
+*.class
+
+# C/C++
+*.obj
+*.out
+*.exe
+
+# generic files to ignore
+*~
+*.lock
+*.DS_Store
+*.swp
