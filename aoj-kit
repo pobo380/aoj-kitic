@@ -1,0 +1,253 @@
+#!/usr/bin/env ruby
+require 'optparse'
+require 'yaml'
+require 'net/http'
+require 'uri'
+
+### Code from http://d.hatena.ne.jp/Tayama/20101207/1291727425 
+class AOJResultPrinter
+
+  RETRY_COUNT = 5
+
+  def self.print_result(http, path, username)
+    wait_time = 2
+    RETRY_COUNT.times {
+      sleep(wait_time)
+      response = http.get(path)
+      result, need_retry = parse_result(response.body, username)
+      puts result
+      if(!need_retry)
+        break
+      end
+      wait_time += 1
+    }
+  end
+  
+  def self.parse_result(text, submitter_username)
+    str = text.gsub(/\s/, " ")
+    submission_regexp = /<status>(.*?<status>.*?<\/status>.*?)<\/status>/
+    str.scan(submission_regexp){ |matches|
+      match = matches[0]
+
+      id       = extract(match, "run_id").to_i
+      username = extract(match, "user_id")
+      problem  = extract(match, "problem_id")
+      time     = Time.at(extract(match, "submission_date").to_i / 1000)
+      status   = extract(match, "status")
+      language = extract(match, "language")
+      runtime  = extract(match, "cputime").to_i
+      memory   = extract(match, "memory").to_i
+      length   = extract(match, "code_size").to_i
+      
+      if(username == submitter_username && Time.now < time + 60)
+        tokens = []
+        tokens.push('')
+        tokens.push("Result:      " + status)
+        tokens.push("Run ID:      " + id.to_s)
+        if(status != "Runtime Error" && status != "Compile Error")
+          tokens.push("Time:        " + sprintf("%.02f sec", runtime.to_f/100))
+          tokens.push("Memory:      " + memory.to_s + " KB")
+        end
+        tokens.push("Code Length: " + length.to_s + " bytes")
+        return [tokens.join("\n"), false]
+      end
+    }
+    return ["in judge queue...", true]
+  end
+  
+  def self.extract(text, target)
+    return text.scan(/<#{target}>(.*?)<\/#{target}>/)[0][0].strip
+  end
+end
+
+class Submitter
+  
+  MAP_EXTNAME_LANGUAGE = {
+    '.c'    => :c,
+    '.cpp'  => :cpp,
+    '.cc'   => :cpp,
+    '.C'    => :cpp,
+    '.java' => :java,
+  }
+
+  JUDGE_SETTING = {
+    
+    :aoj => {
+      :name => "Aizu Online Judge",
+      
+      :uri         => 'judge.u-aizu.ac.jp',
+      :path_submit => '/onlinejudge/servlet/Submit',
+      :path_result => '/onlinejudge/webservice/status_log',
+
+      :map_form_name => {
+        :username  => 'userID',
+        :password  => 'password',
+        :problemID => 'problemNO',
+        :language  => 'language',
+        :program   => 'sourceCode'
+      },
+
+      :map_form_value_language => {
+        :c    => 'C',
+        :"c++"  => 'C++',
+        :java => 'JAVA',
+      },
+
+      :result_printer => AOJResultPrinter,
+    }
+  }
+  
+  USER_SETTING = {
+    :aoj => {
+      :username => '',
+      :password => '',
+    },
+  }
+
+  def set_params(opt) #filename, judge, problem_id, lang, username, password
+    @filename  = opt[:filename]
+
+    @judge     = opt[:judge]      || 'aoj'
+    problemID = opt[:problem_id] || get_problemID(@filename)
+    @problemID = "%04d"%[problemID]
+    @language  = opt[:lang]       || get_language(@filename)
+
+    USER_SETTING[@judge][:username] = opt[:username]
+    USER_SETTING[@judge][:password] = opt[:password]
+
+  end
+
+  def get_language(filename)
+    return MAP_EXTNAME_LANGUAGE[File.extname(filename)]
+  end
+
+  def get_problemID(filename)
+    return File.basename(filename).split(/[^A-Z0-9]/).first
+  end
+
+  def submit()
+    judge        = JUDGE_SETTING[@judge]
+    uri          = judge[:uri]
+    path_submit  = judge[:path_submit]
+    path_result  = judge[:path_result]
+    data         = create_data()
+    
+    print_log()
+
+    # --------
+
+    Net::HTTP.start(uri) { |http|
+      # dryrun
+      if(true)
+        response = http.post(path_submit, data)
+        print response.code, ' ', response.message, "\n" 
+      else
+        puts "Dryrun..."
+      end
+      
+      resp = judge[:result_printer]
+      
+      if(path_result && judge[:result_printer])
+        judge[:result_printer].print_result(http, path_result, USER_SETTING[@judge][:username])
+      end
+    }
+  end
+
+  def print_log()
+    STDERR << "Submitting...\n"
+
+    STDERR << "Judge:    " << JUDGE_SETTING[@judge][:name] << "\n"
+    STDERR << "Problem:  " << @problemID << "\n"
+    STDERR << "Language: " << @language.to_s.capitalize << "\n"
+    STDERR << "Filename: " << @filename << "\n"    
+  end
+
+  def create_data()    
+    judge = JUDGE_SETTING[@judge]
+    user  = USER_SETTING[@judge]
+    
+    params = {
+      :username => user[:username],
+      :password => user[:password],
+      
+      :problemID => @problemID,
+      :program   => File.open(@filename).read(),
+      :language  => judge[:map_form_value_language][@language],
+    }
+
+    form_name = judge[:map_form_name]
+
+    return params.map{ |key, value|
+      enc(form_name[key]) + '=' + enc(value)
+    }.join('&')
+  end
+
+  def enc(str)
+    return URI.encode(str, /./n)
+  end
+end
+
+lang2ext = {
+  'c'    => ['c'],
+  'c++'  => ['cpp', 'cc'],
+  'java' => ['java']
+}
+
+## Get script_dir
+script_dir = File.expand_path(File.dirname(__FILE__))
+
+## Parse arguments
+command = nil
+problem_id = nil
+username = nil
+password = nil
+lang = nil
+
+OptionParser.new do |opt|
+  opt.on('-l LANGUAGE', ['c', 'c++', 'java']) {|v| lang = v }
+  opt.on('-u USERNAME') {|v| username = v }
+  opt.on('-p PASSWORD') {|v| password = v }
+
+  opt.version = '1.0.0'
+  opt.parse!(ARGV)
+end
+
+command, problem_id = ARGV
+problem_id = problem_id.to_i
+
+## Load setting.yaml
+setting_file = script_dir + '/setting.yaml'
+setting = YAML.load(File.read(setting_file))
+
+username ||= setting['user']['name']
+password ||= setting['user']['password']
+lang     ||= setting['lang']
+
+## Get solver path
+solver_id   = "{#{problem_id},#{"%04d"%[problem_id]}}"
+solver_ext  = lang.nil? ? '*' : "{#{lang2ext[lang].join(',')}}"
+solvers     = Dir.glob("**/problem#{solver_id}.#{solver_ext}")
+
+raise "problem #{problem_id} -- solver not found." if solvers.empty?
+raise "problem #{problem_id} -- can't determine solver." if solvers.size > 1
+
+solver_file = solvers.shift
+
+## Excute commnad
+case command
+when 'submit'
+  submitter = Submitter.new
+  p opt = {
+    :problem_id => problem_id,
+    :filename => solver_file,
+    :username => username, 
+    :password => password,
+    :lang     => lang
+  }
+  submitter.set_params(opt)
+  submitter.submit()
+when 'test'
+else
+  raise "#{command} -- undefined command"
+end
+
