@@ -238,7 +238,7 @@ lang     ||= setting['lang']
 ## Get solver path
 solver_id   = "{#{problem_id},#{"%04d"%[problem_id]}}"
 solver_ext  = lang.nil? ? '*' : "{#{lang2ext[lang].join(',')}}"
-solvers     = Dir.glob("**/problem#{solver_id}.#{solver_ext}")
+solvers     = Dir.glob("solvers/**/problem#{solver_id}.#{solver_ext}")
 
 raise "problem #{problem_id} -- solver not found." if solvers.empty?
 raise "problem #{problem_id} -- can't determine solver." if solvers.size > 1
