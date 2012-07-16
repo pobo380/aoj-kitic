@@ -3,8 +3,9 @@ require 'optparse'
 require 'yaml'
 require 'net/http'
 require 'uri'
+require 'open-uri'
 
-### Code from http://d.hatena.ne.jp/Tayama/20101207/1291727425 
+### code from http://d.hatena.ne.jp/Tayama/20101207/1291727425 
 class AOJResultPrinter
 
   RETRY_COUNT = 5
@@ -64,9 +65,9 @@ class Submitter
   
   MAP_EXTNAME_LANGUAGE = {
     '.c'    => :c,
-    '.cpp'  => :cpp,
-    '.cc'   => :cpp,
-    '.C'    => :cpp,
+    '.cpp'  => :"c++",
+    '.cc'   => :"c++",
+    '.C'    => :"c++",
     '.java' => :java,
   }
 
@@ -107,8 +108,8 @@ class Submitter
   def set_params(opt) #filename, judge, problem_id, lang, username, password
     @filename  = opt[:filename]
 
-    @judge     = opt[:judge]      || 'aoj'
-    problemID = opt[:problem_id] || get_problemID(@filename)
+    @judge     = opt[:judge]      || :aoj
+    problemID  = opt[:problem_id] || get_problemID(@filename)
     @problemID = "%04d"%[problemID]
     @language  = opt[:lang]       || get_language(@filename)
 
@@ -187,9 +188,20 @@ class Submitter
   end
 end
 
+class Tester
+  BASE_URI = 'http://judge.u-aizu.ac.jp/onlinejudge/description.jsp?id='
+
+  def self.get_sample(problem_id)
+    res = open(BASE_URI + "%04d"%[problem_id]).read
+    input  = res.scan(/<h2>Sample Input<\/h2>\s*<pre>\s*(.*?)<\/pre>/mi)
+    output = res.scan(/<h2>Output for the Sample Input<\/h2>\s*<pre>\s*(.*?)<\/pre>/mi).first.first
+    [input, output]
+  end
+end
+
 lang2ext = {
   'c'    => ['c'],
-  'c++'  => ['cpp', 'cc'],
+  'c++'  => ['cpp', 'cc', 'C'],
   'java' => ['java']
 }
 
@@ -237,16 +249,47 @@ solver_file = solvers.shift
 case command
 when 'submit'
   submitter = Submitter.new
-  p opt = {
-    :problem_id => problem_id,
-    :filename => solver_file,
-    :username => username, 
-    :password => password,
-    :lang     => lang
-  }
-  submitter.set_params(opt)
+  submitter.set_params({:problem_id => problem_id,
+                       :filename => solver_file,
+                       :username => username, 
+                       :password => password,
+                       :lang     => lang})
   submitter.submit()
 when 'test'
+  sample_input, sample_output = Tester.get_sample(problem_id)
+
+  ## Compile && Execute
+  exec_path = script_dir + '/temp.out'
+  lang = lang || Submitter::MAP_EXTNAME_LANGUAGE[File.extname(solver_file)]
+  io = case lang
+       when :c
+         `gcc #{solver_file} -o #{exec_path}`
+         IO.popen(exec_path, "r+")
+       when :"c++"
+         `g++ #{solver_file} -o #{exec_path}`
+         IO.popen(exec_path, "r+")
+       when :java
+         `javac #{solver_file}`
+         IO.popen("java Main", "r+")
+       end
+
+  io.print sample_input
+  solver_output =  io.read
+
+  sample_out_ary, solver_out_ary = [sample_output, solver_output].map{|str| str.split("\n") }
+  zipped_out = sample_out_ary.zip(solver_out_ary)
+
+  ## print results
+  if zipped_out.all?{|sam, sol| sam == sol}
+    puts '!! Accepted !!'
+  else
+    puts '!! Wrong Answer !!'
+  end
+
+  zipped_out.each.with_index do |(sample, solver), idx|
+    result = sample == solver ? 'o' : 'x'
+    puts "#{"%2d"%[idx]}| #{result} | #{sample} == #{solver}"
+  end
 else
   raise "#{command} -- undefined command"
 end
