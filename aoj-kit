@@ -136,8 +136,15 @@ class Submitter
     print_log()
 
     # --------
+    if ENV['http_proxy'].nil?
+      http_class = Net::HTTP
+    else
+      address, port = ENV['http_proxy'].split(':')[-2..-1]
+      address = address.gsub('/', '')
+      http_class = Net::HTTP::Proxy(address, port)
+    end
 
-    Net::HTTP.start(uri) { |http|
+    http_class.start(uri) { |http|
       # dryrun
       if(true)
         response = http.post(path_submit, data)
@@ -193,8 +200,8 @@ class Tester
 
   def self.get_sample(problem_id)
     res = open(BASE_URI + "%04d"%[problem_id]).read
-    input  = res.scan(/<h2>Sample Input<\/h2>\s*<pre>\s*(.*?)<\/pre>/mi)
-    output = res.scan(/<h2>Output for the Sample Input<\/h2>\s*<pre>\s*(.*?)<\/pre>/mi).first.first
+    input  = res.scan(/<h[23]>Sample Input<\/h[23]>\s*<pre>\s*(.*?)<\/pre>/mi)
+    output = res.scan(/<h[23]>Output for the Sample Input<\/h[23]>\s*<pre>\s*(.*?)<\/pre>/mi).first.first
     [input, output]
   end
 end
@@ -239,6 +246,7 @@ lang     ||= setting['lang']
 solver_id   = "{#{problem_id},#{"%04d"%[problem_id]}}"
 solver_ext  = lang.nil? ? '*' : "{#{lang2ext[lang].join(',')}}"
 solvers     = Dir.glob("solvers/**/problem#{solver_id}.#{solver_ext}")
+solvers     = solvers.uniq
 
 raise "problem #{problem_id} -- solver not found." if solvers.empty?
 raise "problem #{problem_id} -- can't determine solver." if solvers.size > 1
@@ -274,6 +282,7 @@ when 'test'
        end
 
   io.print sample_input
+  io.close_write
   solver_output =  io.read
 
   sample_out_ary, solver_out_ary = [sample_output, solver_output].map{|str| str.split("\n") }
